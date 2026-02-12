@@ -1,0 +1,165 @@
+{
+  "name": "KLM v2.3 Lyrics Ingestion Pipeline",
+  "nodes": [
+    {
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [100, 300],
+      "parameters": {}
+    },
+    {
+      "name": "Watch Folder",
+      "type": "n8n-nodes-base.watchDocument",
+      "position": [300, 300],
+      "parameters": {
+        "path": "assets/raw_lyrics",
+        "options": {
+          "watchFor": "filesCreated"
+        }
+      }
+    },
+    {
+      "name": "Read File",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [500, 300],
+      "parameters": {
+        "path": "={{ $json.path }}",
+        "options": {
+          "encoding": "utf8"
+        }
+      }
+    },
+    {
+      "name": "Parse Lyrics",
+      "type": "n8n-nodes-base.function",
+      "position": [700, 300],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const filename = item.json.name || 'unknown.txt';\n  const content = item.binary?.data?.data || '';\n  \n  const parts = filename.replace('.txt', '').split('_');\n  \n  return {\n    json: {\n      filename,\n      title: parts[0] || 'Unknown',\n      artist: parts[1] || 'Unknown',\n      content: content,\n      metadata: {\n        source: 'raw_lyrics',\n        ingested_at: new Date().toISOString()\n      }\n    }\n  };\n});"
+      }
+    },
+    {
+      "name": "OpenRAG Embed",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [900, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/embed",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $json.title + ' ' + $json.content.substring(0, 1000) }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Ingest to Supabase",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1100, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/lyrics/ingest",
+        "sendHeaders": true,
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title",
+              "value": "={{ $json[0].parsed?.title || $json[0].json.title }}"
+            },
+            {
+              "name": "artist",
+              "value": "={{ $json[0].parsed?.artist || $json[0].json.artist }}"
+            },
+            {
+              "name": "lyrics_khmer",
+              "value": "={{ $json[0].json.content }}"
+            },
+            {
+              "name": "embedding",
+              "value": "={{ $json[1].json.embedding }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Archive File",
+      "type": "n8n-nodes-base.moveBinaryFile",
+      "position": [1300, 300],
+      "parameters": {
+        "sourcePath": "={{ $json[0].json.filename }}",
+        "destinationPath": "=assets/archive/{{ $json[0].json.filename }}",
+        "options": {
+          "createDirectory": true
+        }
+      }
+    },
+    {
+      "name": "Notify Success",
+      "type": "n8n-nodes-base.slack",
+      "position": [1500, 300],
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=✅ Ingested via OpenRAG: {{ $json[0].json.title }} by {{ $json[0].json.artist }}"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          { "node": "Watch Folder", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Watch Folder": {
+      "main": [
+        [
+          { "node": "Read File", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Read File": {
+      "main": [
+        [
+          { "node": "Parse Lyrics", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse Lyrics": {
+      "main": [
+        [
+          { "node": "OpenRAG Embed", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "OpenRAG Embed": {
+      "main": [
+        [
+          { "node": "Ingest to Supabase", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ingest to Supabase": {
+      "main": [
+        [
+          { "node": "Archive File", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Archive File": {
+      "main": [
+        [
+          { "node": "Notify Success", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
