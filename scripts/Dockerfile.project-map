@@ -1,0 +1,79 @@
+# Dockerfile for Project Map Generator
+# Builds a container that auto-generates PROJECT_MAP.md
+
+FROM python:3.11-slim
+
+LABEL maintainer="AOKhmer Team"
+LABEL description="Project Map Generator - Auto-generates PROJECT_MAP.md with structure and diagrams"
+LABEL version="2.2.0"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    graphviz \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt* ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    watchdog \
+    pathspec \
+    mermaid-py 2>/dev/null || true
+
+# Copy the generator script
+COPY project_map_generator.py /app/
+
+# Create output directory
+RUN mkdir -p /app/output
+
+# Environment variables
+ENV PROJECT_ROOT=/workspace
+ENV OUTPUT_PATH=/workspace/PROJECT_MAP.md
+ENV WATCH_MODE=false
+ENV INCLUDE_MERMAID=true
+ENV INCLUDE_METRICS=true
+
+# Create entrypoint script
+RUN cat > /app/entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "🗺️  Project Map Generator v2.2"
+echo "=============================="
+
+# Check if project root exists
+if [ ! -d "$PROJECT_ROOT" ]; then
+    echo "❌ Error: Project root not found at $PROJECT_ROOT"
+    exit 1
+fi
+
+cd "$PROJECT_ROOT"
+
+# Determine mode
+if [ "$WATCH_MODE" = "true" ]; then
+    echo "👀 Watch mode enabled - monitoring for changes..."
+    python /app/project_map_generator.py --root "$PROJECT_ROOT" --watch --output "$OUTPUT_PATH"
+else
+    echo "🔍 Generating project map..."
+    python /app/project_map_generator.py --root "$PROJECT_ROOT" --output "$OUTPUT_PATH"
+    echo "✅ Project map generated at: $OUTPUT_PATH"
+fi
+EOF
+
+RUN chmod +x /app/entrypoint.sh
+
+# Volume for the project
+VOLUME ["/workspace"]
+
+# Default command
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Usage:
+# Build: docker build -t aokhmer/project-map -f Dockerfile.project-map .
+# Run once: docker run -v $(pwd):/workspace aokhmer/project-map
+# Run in watch mode: docker run -v $(pwd):/workspace -e WATCH_MODE=true aokhmer/project-map

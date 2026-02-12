@@ -1,0 +1,111 @@
+# Dockerfile for AHA Moment Detector
+# Builds a container that detects insights and adds to training docs
+
+FROM python:3.11-slim
+
+LABEL maintainer="AOKhmer Team"
+LABEL description="AHA Detector - Automatically detects insights and adds to training documentation"
+LABEL version="2.2.0"
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better caching
+COPY requirements.txt* ./
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    gitpython \
+    pygments 2>/dev/null || true
+
+# Copy the detector script
+COPY aha_detector.py /app/
+
+# Create output directory
+RUN mkdir -p /app/output
+
+# Environment variables
+ENV PROJECT_ROOT=/workspace
+ENV OUTPUT_DIR=/workspace/70-Training/best-practices
+ENV MIN_CONFIDENCE=0.7
+ENV KEYWORD_THRESHOLD=3
+ENV AUTO_COMMIT=false
+ENV REVIEW_REQUIRED=true
+
+# Create entrypoint script
+RUN cat > /app/entrypoint.sh << 'EOF'
+#!/bin/bash
+set -e
+
+echo "💡 AHA Moment Detector v2.2"
+echo "============================"
+
+# Check if project root exists
+if [ ! -d "$PROJECT_ROOT" ]; then
+    echo "❌ Error: Project root not found at $PROJECT_ROOT"
+    exit 1
+fi
+
+cd "$PROJECT_ROOT"
+
+# Create output directory if it doesn't exist
+mkdir -p "$OUTPUT_DIR"
+
+echo "🔍 Scanning repository for AHA moments..."
+echo "   Min Confidence: $MIN_CONFIDENCE"
+echo "   Keyword Threshold: $KEYWORD_THRESHOLD"
+echo "   Output Directory: $OUTPUT_DIR"
+echo ""
+
+# Run the detector
+python /app/aha_detector.py \
+    --root "$PROJECT_ROOT" \
+    --output-dir "$OUTPUT_DIR" \
+    --min-confidence "$MIN_CONFIDENCE" \
+    --keyword-threshold "$KEYWORD_THRESHOLD" \
+    $([ "$AUTO_COMMIT" = "true" ] && echo "--auto-commit")
+
+echo ""
+echo "✅ AHA detection complete!"
+echo "   Results saved to: $OUTPUT_DIR/AHA_MOMENTS.md"
+
+# Show high-confidence moments
+if [ -f "$OUTPUT_DIR/aha_moments.json" ]; then
+    echo ""
+    echo "📊 Summary:"
+    python3 -c "
+import json
+with open('$OUTPUT_DIR/aha_moments.json') as f:
+    moments = json.load(f)
+    high_conf = [m for m in moments if m['confidence'] >= 0.8]
+    print(f'   Total moments detected: {len(moments)}')
+    print(f'   High confidence (≥80%): {len(high_conf)}')
+    if high_conf:
+        print('')
+        print('   ⭐ High-confidence moments:')
+        for m in high_conf[:5]:
+            print(f'      • {m[\"title\"]} ({m[\"category\"]})')
+" 2>/dev/null || true
+fi
+
+echo ""
+EOF
+
+RUN chmod +x /app/entrypoint.sh
+
+# Volume for the project
+VOLUME ["/workspace"]
+
+# Default command
+ENTRYPOINT ["/app/entrypoint.sh"]
+
+# Usage:
+# Build: docker build -t aokhmer/aha-detector -f Dockerfile.aha .
+# Run: docker run -v $(pwd):/workspace aokhmer/aha-detector
+# Run with custom settings: docker run -v $(pwd):/workspace -e MIN_CONFIDENCE=0.8 aokhmer/aha-detector
+# Run on specific file: docker run -v $(pwd):/workspace aokhmer/aha-detector python /app/aha_detector.py --file /workspace/path/to/file.py

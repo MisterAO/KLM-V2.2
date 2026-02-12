@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -eu
+
+if [ "${KLM_SKIP_LCI_REFRESH:-}" != "" ]; then
+  echo "[post-commit] KLM_SKIP_LCI_REFRESH set; skipping LCI refresh."
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+if [ "$repo_root" = "" ]; then
+  exit 0
+fi
+
+cd "$repo_root"
+
+# Windows-friendly: prefer PowerShell if available.
+if command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/post_commit_index.ps1 || true
+  exit 0
+fi
+
+npx lci status || true
+npx lci list || true
