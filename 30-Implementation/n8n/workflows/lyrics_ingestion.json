@@ -1,0 +1,367 @@
+{
+  "name": "KLM Lyrics Ingestion Pipeline",
+  "nodes": [
+    {
+      "name": "Folder Watch",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [100, 300],
+      "parameters": {}
+    },
+    {
+      "name": "Read File",
+      "type": "n8n-nodes-base.readBinaryFile",
+      "position": [300, 300],
+      "parameters": {
+        "path": "={{ $json.filepath }}",
+        "options": {
+          "encoding": "utf8"
+        }
+      }
+    },
+    {
+      "name": "Detect Format",
+      "type": "n8n-nodes-base.function",
+      "position": [500, 300],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const filename = item.json.filename || item.json.name;\n  const ext = filename.split('.').pop().toLowerCase();\n  \n  let format = 'txt_unstructured';\n  if (ext === 'csv') format = 'csv';\n  else if (item.json.content.includes(':')) format = 'txt_header';\n  \n  return { \n    json: { \n      ...item.json,\n      format: format,\n      extension: ext,\n      content_hash: require('crypto').createHash('sha256').update(item.json.content).digest('hex')\n    } \n  };\n});"
+      }
+    },
+    {
+      "name": "Check Duplicates",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [700, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/lyrics/check-duplicate",
+        "sendHeaders": true,
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "title_khmer",
+              "value": "={{ $json.parsed?.title_khmer || $json.content.split('\\n')[0] }}"
+            },
+            {
+              "name": "artist",
+              "value": "={{ $json.parsed?.artist || 'Unknown' }}"
+            },
+            {
+              "name": "content",
+              "value": "={{ $json.content }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      }
+    },
+    {
+      "name": "Branch: Duplicate",
+      "type": "n8n-nodes-base.if",
+      "position": [900, 200],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "DUPLICATE_HASH"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Branch: Cover",
+      "type": "n8n-nodes-base.if",
+      "position": [900, 400],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "POTENTIAL_COVER"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Branch: New",
+      "type": "n8n-nodes-base.if",
+      "position": [900, 600],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.status }}",
+              "operation": "equal",
+              "value2": "NEW"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Skip Duplicate",
+      "type": "n8n-nodes-base.function",
+      "position": [1100, 200],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const timestamp = new Date().toISOString();\n  return {\n    json: {\n      action: 'SKIP',\n      reason: 'DUPLICATE_HASH',\n      filename: item.json.filename,\n      content_hash: item.json.content_hash,\n      existing_id: item.json.existing_id,\n      skipped_at: timestamp,\n      log: `Duplicate skipped at ${timestamp}`\n    }\n  };\n});"
+      }
+    },
+    {
+      "name": "Log Duplicate",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "position": [1300, 200],
+      "parameters": {
+        "fileName": "logs/duplicates.log",
+        "options": {
+          "append": true,
+          "encoding": "utf8"
+        }
+      }
+    },
+    {
+      "name": "Notify Duplicate",
+      "type": "n8n-nodes-base.slack",
+      "position": [1500, 200],
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=🚫 Duplicate skipped: {{ $json.filename }} (hash: {{ $json.content_hash.substring(0, 8) }})"
+      }
+    },
+    {
+      "name": "Process Cover",
+      "type": "n8n-nodes-base.function",
+      "position": [1100, 400],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  return {\n    json: {\n      ...item.json,\n      action: 'PROCESS_AS_COVER',\n      cover_of_id: item.json.existing_id,\n      is_forced_import: true\n    }\n  };\n});"
+      }
+    },
+    {
+      "name": "Notify Cover",
+      "type": "n8n-nodes-base.slack",
+      "position": [1300, 400],
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=🎵 Cover detected: {{ $json.filename }} (original: {{ $json.existing_id }})"
+      }
+    },
+    {
+      "name": "Process New",
+      "type": "n8n-nodes-base.function",
+      "position": [1100, 600],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  return {\n    json: {\n      ...item.json,\n      action: 'PROCESS',\n      is_forced_import: false\n    }\n  };\n});"
+      }
+    },
+    {
+      "name": "Call Processing API",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1300, 600],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8000/api/v1/lyrics/process",
+        "sendHeaders": true,
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "lyrics_id",
+              "value": "={{ $json.lyrics_id }}"
+            },
+            {
+              "name": "romanize",
+              "value": "true"
+            },
+            {
+              "name": "translate",
+              "value": "true"
+            },
+            {
+              "name": "extract_vocab",
+              "value": "true"
+            },
+            {
+              "name": "generate_embeddings",
+              "value": "true"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120000
+        }
+      }
+    },
+    {
+      "name": "Move to Archive",
+      "type": "n8n-nodes-base.moveBinaryFile",
+      "position": [1500, 600],
+      "parameters": {
+        "sourcePath": "={{ $json.filepath }}",
+        "destinationPath": "=assets/archive/{{ $json.filename }}",
+        "options": {
+          "createDirectory": true
+        }
+      }
+    },
+    {
+      "name": "Notify Success",
+      "type": "n8n-nodes-base.slack",
+      "position": [1700, 600],
+      "parameters": {
+        "channel": "#content-pipeline",
+        "text": "=✅ Processed: {{ $json.filename }} ({{ $json.quality_score?.toFixed(2) }}% quality, {{ $json.vocab_count }} words)"
+      }
+    },
+    {
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.errorTrigger",
+      "position": [700, 800],
+      "parameters": {}
+    },
+    {
+      "name": "Log Error",
+      "type": "n8n-nodes-base.writeBinaryFile",
+      "position": [900, 800],
+      "parameters": {
+        "fileName": "logs/errors.log",
+        "options": {
+          "append": true,
+          "encoding": "utf8"
+        }
+      }
+    },
+    {
+      "name": "Notify Error",
+      "type": "n8n-nodes-base.slack",
+      "position": [1100, 800],
+      "parameters": {
+        "channel": "#content-errors",
+        "text": "=❌ Processing error: {{ $json.error }}"
+      }
+    }
+  ],
+  "connections": {
+    "Folder Watch": {
+      "main": [
+        [
+          { "node": "Read File", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Read File": {
+      "main": [
+        [
+          { "node": "Detect Format", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Detect Format": {
+      "main": [
+        [
+          { "node": "Check Duplicates", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Duplicates": {
+      "main": [
+        [
+          { "node": "Branch: Duplicate", "type": "main", "index": 0 },
+          { "node": "Branch: Cover", "type": "main", "index": 0 },
+          { "node": "Branch: New", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Duplicate": {
+      "main": [
+        [
+          { "node": "Skip Duplicate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Skip Duplicate": {
+      "main": [
+        [
+          { "node": "Log Duplicate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Log Duplicate": {
+      "main": [
+        [
+          { "node": "Notify Duplicate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Cover": {
+      "main": [
+        [
+          { "node": "Process Cover", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process Cover": {
+      "main": [
+        [
+          { "node": "Call Processing API", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process Cover": {
+      "main": [
+        [
+          { "node": "Notify Cover", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: New": {
+      "main": [
+        [
+          { "node": "Process New", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Process New": {
+      "main": [
+        [
+          { "node": "Call Processing API", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call Processing API": {
+      "main": [
+        [
+          { "node": "Move to Archive", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Move to Archive": {
+      "main": [
+        [
+          { "node": "Notify Success", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Error Handler": {
+      "main": [
+        [
+          { "node": "Log Error", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Log Error": {
+      "main": [
+        [
+          { "node": "Notify Error", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

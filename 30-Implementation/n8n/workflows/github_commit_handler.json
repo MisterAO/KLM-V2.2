@@ -1,0 +1,87 @@
+{
+  "name": "GitHub Commit Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "events": ["push"],
+        "repository": "MisterAO/KLM-V2.1"
+      },
+      "id": "github-trigger",
+      "name": "GitHub Trigger",
+      "type": "n8n-nodes-base.githubTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "command": "python scripts/project_map_generator.py"
+      },
+      "id": "update-map",
+      "name": "Update Project Map",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "command": "python scripts/aha_detector.py"
+      },
+      "id": "detect-aha-commit",
+      "name": "Detect AHA Moments",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "content": "Commit processed: {{$json.commits[0].message}}",
+        "options": {}
+      },
+      "id": "discord-commit",
+      "name": "Discord Notification",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "GitHub Trigger": {
+      "main": [
+        [
+          {
+            "node": "Update Project Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Project Map": {
+      "main": [
+        [
+          {
+            "node": "Detect AHA Moments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect AHA Moments": {
+      "main": [
+        [
+          {
+            "node": "Discord Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["github", "automation", "documentation"]
+}

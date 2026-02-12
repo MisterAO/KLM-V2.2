@@ -1,0 +1,168 @@
+{
+  "name": "KLM Content Ingestion - Template",
+  "nodes": [
+    {
+      "name": "YouTube Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [100, 200],
+      "parameters": {}
+    },
+    {
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.function",
+      "position": [300, 200],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const url = item.json.videoUrl;\n  const videoId = url.split('v=')[1] || url.split('/').pop();\n  return { json: { videoId, originalUrl: url } };\n});"
+      }
+    },
+    {
+      "name": "Download Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [500, 200],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ 'http://localhost:8001/download' }}?video_id={{ $json.videoId }}",
+        "options": {}
+      }
+    },
+    {
+      "name": "Transcribe (Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [700, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'http://localhost:8001/transcribe' }}",
+        "jsonParameters": true,
+        "json": {
+          "video_id": "={{ $json.videoId }}"
+        }
+      }
+    },
+    {
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.function",
+      "position": [900, 200],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const score = item.json.qualityScore || 0;\n  const status = score >= 0.7 ? 'APPROVED' : 'REVIEW';\n  return { json: { ...item.json, qualityStatus: status } };\n});"
+      }
+    },
+    {
+      "name": "Branch: Approved",
+      "type": "n8n-nodes-base.if",
+      "position": [1100, 100],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.qualityStatus }}",
+              "operation": "equal",
+              "value2": "APPROVED"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Branch: Review",
+      "type": "n8n-nodes-base.if",
+      "position": [1100, 300],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.qualityStatus }}",
+              "operation": "equal",
+              "value2": "REVIEW"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1300, 50],
+      "parameters": {
+        "operation": "insert",
+        "table": "lyrics_table",
+        "columns": "id, title, status, quality_score",
+        "values": "={{ $json.videoId }}, '{{ $json.title }}', '{{ $json.qualityStatus }}', {{ $json.qualityScore }}"
+      }
+    },
+    {
+      "name": "Notify for Review",
+      "type": "n8n-nodes-base.slack",
+      "position": [1300, 300],
+      "parameters": {
+        "channel": "#content-review",
+        "text": "={{ 'New content needs review: ' + $json.videoId + ' (Score: ' + $json.qualityScore + ')' }}"
+      }
+    },
+    {
+      "name": "Brand Compliance Check",
+      "type": "n8n-nodes-base.function",
+      "position": [400, 200],
+      "parameters": {
+        "functionCode": "// Brand compliance checks\nconst items = $input.all();\nreturn items.map(item => {\n  const issues = [];\n  \n  // Check colors (if visual present)\n  if (item.json.colors) {\n    const validColors = ['#EBCB00', '#374C57', '#E20263', '#A29E98'];\n    // Color validation logic here\n  }\n  \n  // Check prohibited content\n  const prohibited = ['khmer rouge', 'political'];\n  prohibited.forEach(term => {\n    if (item.json.title?.toLowerCase().includes(term)) {\n      issues.push('Prohibited content detected: ' + term);\n    }\n  });\n  \n  return { json: { ...item.json, brandCompliance: issues.length === 0, complianceIssues: issues } };\n});"
+      }
+    }
+  ],
+  "connections": {
+    "YouTube Trigger": {
+      "main": [
+        [
+          { "node": "Extract Video ID", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Extract Video ID": {
+      "main": [
+        [
+          { "node": "Download Audio", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Download Audio": {
+      "main": [
+        [
+          { "node": "Brand Compliance Check", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Brand Compliance Check": {
+      "main": [
+        [
+          { "node": "Transcribe (Whisper)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Transcribe (Whisper)": {
+      "main": [
+        [
+          { "node": "Quality Gate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Quality Gate": {
+      "main": [
+        [
+          { "node": "Branch: Approved", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Approved": {
+      "main": [
+        [
+          { "node": "Save to Database", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Review": {
+      "main": [
+        [
+          { "node": "Notify for Review", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  }
+}

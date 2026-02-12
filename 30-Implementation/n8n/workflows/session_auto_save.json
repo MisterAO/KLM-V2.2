@@ -1,0 +1,85 @@
+{
+  "name": "Session Auto-Save",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [250, 300],
+      "webhookId": "session-end"
+    },
+    {
+      "parameters": {
+        "command": "python scripts/project_map_generator.py"
+      },
+      "id": "generate-map",
+      "name": "Generate Project Map",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "command": "python scripts/aha_detector.py"
+      },
+      "id": "detect-aha",
+      "name": "Detect AHA Moments",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "content": "Session archived and AHA moments detected",
+        "options": {}
+      },
+      "id": "discord-notify",
+      "name": "Discord Notification",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Generate Project Map",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Project Map": {
+      "main": [
+        [
+          {
+            "node": "Detect AHA Moments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect AHA Moments": {
+      "main": [
+        [
+          {
+            "node": "Discord Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": ["session", "automation", "documentation"]
+}

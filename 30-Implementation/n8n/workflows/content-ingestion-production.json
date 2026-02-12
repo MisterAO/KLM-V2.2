@@ -1,0 +1,299 @@
+{
+  "name": "KLM Content Ingestion - Production",
+  "nodes": [
+    {
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "position": [100, 300],
+      "parameters": {}
+    },
+    {
+      "name": "YouTube URL Input",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [300, 300],
+      "parameters": {
+        "operation": "read",
+        "sheetId": "={{ $json.sheetId || 'YOUR_SHEET_ID' }}",
+        "range": "A:A",
+        "rawData": false
+      }
+    },
+    {
+      "name": "Extract Video ID",
+      "type": "n8n-nodes-base.function",
+      "position": [500, 300],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const url = item.json.url || item.json;\n  const videoId = url.includes('v=') \n    ? url.split('v=')[1].split('&')[0] \n    : url.split('/').pop();\n  return { json: { videoId, url, status: 'NEW' } };\n});"
+      }
+    },
+    {
+      "name": "Download Audio",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [700, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/api/download",
+        "sendHeaders": true,
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "video_id",
+              "value": "={{ $json.videoId }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 300
+        }
+      }
+    },
+    {
+      "name": "Transcribe (Whisper)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [900, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/api/transcribe",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "video_id",
+              "value": "={{ $json.videoId }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600
+        }
+      }
+    },
+    {
+      "name": "Analyze (Gemini)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1100, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8001/api/analyze",
+        "sendHeaders": true,
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "video_id",
+              "value": "={{ $json.videoId }}"
+            },
+            {
+              "name": "prompt_type",
+              "value": "full_analysis"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 120
+        }
+      }
+    },
+    {
+      "name": "Brand Compliance Check",
+      "type": "n8n-nodes-base.function",
+      "position": [1300, 300],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const content = item.json;\n  const issues = [];\n  \n  // Check prohibited content\n  const prohibited = ['khmer rouge', 'pol pot', 'genocide', 'political'];\n  const text = (content.analysis || '' + content.title || '').toLowerCase();\n  \n  prohibited.forEach(term => {\n    if (text.includes(term)) {\n      issues.push('PROHIBITED: ' + term);\n    }\n  });\n  \n  // Brand colors present\n  const brandColors = ['#EBCB00', '#374C57', '#E20263', '#A29E98'];\n  \n  return { \n    json: { \n      ...content, \n      brandCompliant: issues.length === 0,\n      complianceIssues: issues,\n      qualityScore: content.qualityScore || 0.8\n    } \n  };\n});"
+      }
+    },
+    {
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.function",
+      "position": [1500, 300],
+      "parameters": {
+        "functionCode": "const items = $input.all();\nreturn items.map(item => {\n  const content = item.json;\n  const score = content.qualityScore || 0;\n  const compliant = content.brandCompliant && content.complianceIssues.length === 0;\n  \n  let status = 'REJECTED';\n  if (compliant && score >= 0.7) status = 'APPROVED';\n  else if (compliant) status = 'REVIEW';\n  \n  return { json: { ...content, qualityStatus: status } };\n});"
+      }
+    },
+    {
+      "name": "Branch: Approved",
+      "type": "n8n-nodes-base.if",
+      "position": [1700, 200],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.qualityStatus }}",
+              "operation": "equal",
+              "value2": "APPROVED"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Branch: Review",
+      "type": "n8n-nodes-base.if",
+      "position": [1700, 400],
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.qualityStatus }}",
+              "operation": "equal",
+              "value2": "REVIEW"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Save to Database",
+      "type": "n8n-nodes-base.postgres",
+      "position": [1900, 100],
+      "parameters": {
+        "operation": "insert",
+        "table": "lyrics_table",
+        "columns": "id, title, status, quality_score, created_at",
+        "valuesJson": "={{ JSON.stringify([$json.videoId, $json.title, $json.qualityStatus, $json.qualityScore, new Date().toISOString()]) }}"
+      }
+    },
+    {
+      "name": "Generate Visual (ComfyUI)",
+      "type": "n8n-nodes-base.httpRequest",
+      "position": [1900, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8188/api/prompt",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "prompt",
+              "value": "={{ $json.visualPrompt }}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Notify: Approved",
+      "type": "n8n-nodes-base.slack",
+      "position": [2100, 100],
+      "parameters": {
+        "channel": "#content-approved",
+        "text": "={{ '✅ Content approved: ' + $json.title + ' (' + $json.videoId + ')' }}"
+      }
+    },
+    {
+      "name": "Notify: Review Needed",
+      "type": "n8n-nodes-base.slack",
+      "position": [1900, 500],
+      "parameters": {
+        "channel": "#content-review",
+        "text": "={{ '⚠️ Content needs review: ' + $json.title + ' (' + $json.videoId + ' - Score: ' + $json.qualityScore + ')' }}"
+      }
+    },
+    {
+      "name": "Mark Video ID",
+      "type": "n8n-nodes-base.googleSheets",
+      "position": [2300, 100],
+      "parameters": {
+        "operation": "update",
+        "sheetId": "={{ $json.sheetId || 'YOUR_SHEET_ID' }}",
+        "range": "B:B",
+        "row": "={{ $json.row || 2 }}",
+        "rawData": false,
+        "value": "={{ $json.qualityStatus }}"
+      }
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          { "node": "YouTube URL Input", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "YouTube URL Input": {
+      "main": [
+        [
+          { "node": "Extract Video ID", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Extract Video ID": {
+      "main": [
+        [
+          { "node": "Download Audio", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Download Audio": {
+      "main": [
+        [
+          { "node": "Transcribe (Whisper)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Transcribe (Whisper)": {
+      "main": [
+        [
+          { "node": "Analyze (Gemini)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Analyze (Gemini)": {
+      "main": [
+        [
+          { "node": "Brand Compliance Check", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Brand Compliance Check": {
+      "main": [
+        [
+          { "node": "Quality Gate", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Quality Gate": {
+      "main": [
+        [
+          { "node": "Branch: Approved", "type": "main", "index": 0 },
+          { "node": "Branch: Review", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Approved": {
+      "main": [
+        [
+          { "node": "Save to Database", "type": "main", "index": 0 },
+          { "node": "Generate Visual (ComfyUI)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Branch: Review": {
+      "main": [
+        [
+          { "node": "Notify: Review Needed", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Save to Database": {
+      "main": [
+        [
+          { "node": "Notify: Approved", "type": "main", "index": 0 },
+          { "node": "Mark Video ID", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Generate Visual (ComfyUI)": {
+      "main": [
+        [
+          { "node": "Notify: Approved", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
